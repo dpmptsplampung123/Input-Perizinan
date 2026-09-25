@@ -8,6 +8,7 @@ from database import insert_perizinan
 
 import os
 
+@st.cache_data
 def load_sektor():
     # Get standard path relative to this file (pages/...) -> root is parent
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -293,10 +294,12 @@ if uploaded_file:
                 success_count = 0
                 error_count = 0
                 errors = []
+                curr_user = st.session_state.get("user", {})
+                importer_user = curr_user.get("username", "import_excel")
                 
                 for i, record in enumerate(processed_records):
                     try:
-                        insert_perizinan(record)
+                        insert_perizinan(record, username=importer_user)
                         success_count += 1
                     except Exception as e:
                         error_count += 1

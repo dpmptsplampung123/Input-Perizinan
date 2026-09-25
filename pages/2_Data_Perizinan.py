@@ -51,7 +51,7 @@ if data:
         'resiko', 'kapasitas', 'rencana_investasi', 'jenis_permohonan', 'nomor_permohonan', 'tanggal_permohonan',
         'nomor_tanggal_permohonan_rekomendasi', 'nomor_tanggal_rekomendasi',
         'nomor_izin', 'tanggal_izin', 'masa_berlaku', 'npwp',
-        'telepon', 'email', 'keterangan', 'jenis_dokumen', 'created_at', 'updated_at'
+        'telepon', 'email', 'keterangan', 'jenis_dokumen', 'created_by', 'updated_by', 'created_at', 'updated_at'
     ]
     
     data_list = []

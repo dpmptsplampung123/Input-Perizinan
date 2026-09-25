@@ -1,12 +1,29 @@
 import os
+import re
 import psycopg2
 import bcrypt
 from datetime import datetime
 
+# Helper cache decorator yang aman jika dijalankan di luar Streamlit
+try:
+    import streamlit as st
+    cache_data = st.cache_data
+    def invalidate_cache():
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+except Exception:
+    def cache_data(*args, **kwargs):
+        def decorator(f):
+            return f
+        return decorator
+    def invalidate_cache():
+        pass
+
 def get_database_url():
     """Mengambil connection string Supabase dari st.secrets atau environment"""
     url = None
-    # 1. Coba dari streamlit secrets jika ada
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
@@ -17,7 +34,6 @@ def get_database_url():
     except Exception:
         pass
 
-    # 2. Coba dari file .streamlit/secrets.toml secara manual jika belum dapat
     if not url:
         secrets_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit", "secrets.toml")
         if os.path.exists(secrets_path):
@@ -29,14 +45,12 @@ def get_database_url():
             except Exception:
                 pass
 
-    # 3. Coba dari environment variable
     if not url:
         url = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
 
     if not url:
         raise ValueError("Database connection URL tidak ditemukan! Pastikan .streamlit/secrets.toml sudah dikonfigurasi.")
 
-    # Bersihkan query parameter yang tidak didukung psycopg2 (seperti ?pgbouncer=true)
     if "?" in url:
         url = url.split("?")[0]
 
@@ -63,10 +77,7 @@ def check_password(password: str, hashed: str) -> bool:
         return False
 
 def verify_user(username: str, password: str):
-    """
-    Verifikasi login user.
-    Mengembalikan dict user jika valid, None jika salah.
-    """
+    """Verifikasi login user"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -101,6 +112,7 @@ def create_user(username: str, password: str, nama_lengkap: str, role: str = "pe
         """, (username.strip().lower(), p_hash, nama_lengkap.strip(), role))
         user_id = cursor.fetchone()[0]
         conn.commit()
+        invalidate_cache()
         return user_id
     finally:
         conn.close()
@@ -128,6 +140,7 @@ def update_user_password(user_id: int, new_password: str):
             UPDATE users SET password_hash = %s WHERE id = %s
         """, (p_hash, user_id))
         conn.commit()
+        invalidate_cache()
     finally:
         conn.close()
 
@@ -138,15 +151,16 @@ def delete_user(user_id: int):
     try:
         cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
+        invalidate_cache()
     finally:
         conn.close()
 
 # ==========================================
-# DATABASE INITIALIZATION
+# DATABASE INITIALIZATION & MIGRATIONS
 # ==========================================
 
 def init_database():
-    """Inisialisasi tabel perizinan dan users di Supabase"""
+    """Inisialisasi tabel perizinan dan users di Supabase beserta migrasi audit trail"""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -180,17 +194,24 @@ def init_database():
         keterangan TEXT,
         jenis_dokumen TEXT,
         rencana_investasi TEXT,
+        created_by TEXT DEFAULT '',
+        updated_by TEXT DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
     
-    # Migration: pastikan kolom rencana_investasi ada
-    try:
-        cursor.execute("ALTER TABLE perizinan ADD COLUMN IF NOT EXISTS rencana_investasi TEXT DEFAULT '';")
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    # Migrasi kolom tambahan secara aman
+    for col_def in [
+        "ALTER TABLE perizinan ADD COLUMN IF NOT EXISTS rencana_investasi TEXT DEFAULT '';",
+        "ALTER TABLE perizinan ADD COLUMN IF NOT EXISTS created_by TEXT DEFAULT '';",
+        "ALTER TABLE perizinan ADD COLUMN IF NOT EXISTS updated_by TEXT DEFAULT '';"
+    ]:
+        try:
+            cursor.execute(col_def)
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
     # 2. Tabel users
     cursor.execute("""
@@ -215,18 +236,21 @@ def init_database():
             VALUES (%s, %s, %s, %s)
         """, ("admin", default_admin_hash, "Administrator DPMPTSP", "admin"))
         conn.commit()
-        print("Default admin user created: username='admin', password='admin123'")
 
     conn.close()
 
 # ==========================================
-# PERIZINAN CRUD FUNCTIONS
+# PERIZINAN CRUD & AUDIT FUNCTIONS
 # ==========================================
 
-def insert_perizinan(data):
-    """Insert data perizinan baru"""
+def insert_perizinan(data, username: str = "sistem"):
+    """Insert data perizinan baru dengan pencatatan audit trail (created_by)"""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Pastikan rencana_investasi hanya angka
+    raw_investasi = str(data.get('rencana_investasi', ''))
+    clean_investasi = re.sub(r'\D', '', raw_investasi)
     
     cursor.execute("""
     INSERT INTO perizinan (
@@ -235,8 +259,9 @@ def insert_perizinan(data):
         kapasitas, jenis_permohonan, nomor_permohonan, tanggal_permohonan,
         nomor_tanggal_permohonan_rekomendasi,
         nomor_tanggal_rekomendasi, nomor_izin, tanggal_izin,
-        masa_berlaku, npwp, telepon, email, keterangan, jenis_dokumen, rencana_investasi
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        masa_berlaku, npwp, telepon, email, keterangan, jenis_dokumen, rencana_investasi,
+        created_by, updated_by
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         data.get('sektor', ''), data.get('kategori_perizinan', ''), data.get('nama_pengguna_layanan', ''), data.get('nib', ''),
         data.get('alamat', ''), data.get('pemilik_pengurus', ''), data.get('lokasi_usaha', ''),
@@ -247,11 +272,13 @@ def insert_perizinan(data):
         data.get('nomor_tanggal_rekomendasi', ''),
         data.get('nomor_izin', ''), data.get('tanggal_izin', ''), data.get('masa_berlaku', ''),
         data.get('npwp', ''), data.get('telepon', ''), data.get('email', ''),
-        data.get('keterangan', ''), data.get('jenis_dokumen', ''), data.get('rencana_investasi', '')
+        data.get('keterangan', ''), data.get('jenis_dokumen', ''), clean_investasi,
+        username, username
     ))
     
     conn.commit()
     conn.close()
+    invalidate_cache()
 
 SELECT_COLS = """
     id, sektor, kategori_perizinan, nama_pengguna_layanan, nib, alamat,
@@ -259,11 +286,12 @@ SELECT_COLS = """
     resiko, kapasitas, rencana_investasi, jenis_permohonan, nomor_permohonan, tanggal_permohonan,
     nomor_tanggal_permohonan_rekomendasi, nomor_tanggal_rekomendasi,
     nomor_izin, tanggal_izin, masa_berlaku, npwp,
-    telepon, email, keterangan, jenis_dokumen, created_at, updated_at
+    telepon, email, keterangan, jenis_dokumen, created_by, updated_by, created_at, updated_at
 """
 
+@cache_data(ttl=60)
 def get_all_perizinan(sektor=None):
-    """Ambil semua data perizinan, optional filter by sektor"""
+    """Ambil semua data perizinan (dengan caching 60 detik), optional filter by sektor"""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -288,10 +316,14 @@ def get_perizinan_by_id(id):
     conn.close()
     return row
 
-def update_perizinan(id, data):
-    """Update data perizinan"""
+def update_perizinan(id, data, username: str = "sistem"):
+    """Update data perizinan dengan pencatatan audit trail (updated_by)"""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Pastikan rencana_investasi hanya angka
+    raw_investasi = str(data.get('rencana_investasi', ''))
+    clean_investasi = re.sub(r'\D', '', raw_investasi)
     
     cursor.execute("""
     UPDATE perizinan SET
@@ -302,7 +334,8 @@ def update_perizinan(id, data):
         nomor_tanggal_permohonan_rekomendasi = %s,
         nomor_tanggal_rekomendasi = %s, nomor_izin = %s,
         tanggal_izin = %s, masa_berlaku = %s, npwp = %s, telepon = %s, email = %s,
-        keterangan = %s, jenis_dokumen = %s, rencana_investasi = %s, updated_at = CURRENT_TIMESTAMP
+        keterangan = %s, jenis_dokumen = %s, rencana_investasi = %s,
+        updated_by = %s, updated_at = CURRENT_TIMESTAMP
     WHERE id = %s
     """, (
         data.get('sektor', ''), data.get('kategori_perizinan', ''), data.get('nama_pengguna_layanan', ''), data.get('nib', ''),
@@ -314,11 +347,13 @@ def update_perizinan(id, data):
         data.get('nomor_tanggal_rekomendasi', ''),
         data.get('nomor_izin', ''), data.get('tanggal_izin', ''), data.get('masa_berlaku', ''),
         data.get('npwp', ''), data.get('telepon', ''), data.get('email', ''),
-        data.get('keterangan', ''), data.get('jenis_dokumen', ''), data.get('rencana_investasi', ''), id
+        data.get('keterangan', ''), data.get('jenis_dokumen', ''), clean_investasi,
+        username, id
     ))
     
     conn.commit()
     conn.close()
+    invalidate_cache()
 
 def delete_perizinan(id):
     """Hapus data perizinan"""
@@ -329,9 +364,11 @@ def delete_perizinan(id):
     
     conn.commit()
     conn.close()
+    invalidate_cache()
 
+@cache_data(ttl=60)
 def search_field_suggestions(field_name, search_term, limit=3):
-    """Search suggestions untuk field tertentu (case-insensitive)"""
+    """Search suggestions untuk field tertentu (case-insensitive dengan caching)"""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -361,8 +398,9 @@ def search_field_suggestions(field_name, search_term, limit=3):
     conn.close()
     return results
 
+@cache_data(ttl=300)
 def get_available_years():
-    """Mengambil daftar tahun unik dari tanggal_permohonan"""
+    """Mengambil daftar tahun unik dari tanggal_permohonan (caching 5 menit)"""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -379,15 +417,9 @@ def get_available_years():
     conn.close()
     return years
 
+@cache_data(ttl=60)
 def get_analytics_metrics(period=None):
-    """
-    Get analytics metrics based on period filter
-    period dict:
-    - type: 'yearly', 'quarterly', 'monthly'
-    - year: 'YYYY'
-    - quarter: 'TW1', 'TW2', 'TW3', 'TW4' (optional)
-    - month: 1-12 (optional)
-    """
+    """Get analytics metrics based on period filter (caching 60 detik)"""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -420,16 +452,12 @@ def get_analytics_metrics(period=None):
     
     metrics = {}
     
-    # 1. Jumlah Pelaku Usaha
     cursor.execute("SELECT COUNT(DISTINCT nama_pengguna_layanan) FROM perizinan")
     metrics['jumlah_pelaku'] = cursor.fetchone()[0] or 0
     
-    # 2. Total NIB
     cursor.execute("SELECT COUNT(DISTINCT nib) FROM perizinan")
     metrics['total_nib'] = cursor.fetchone()[0] or 0
     
-    # 3. Average Process Time (SLA)
-    # PostgreSQL: validasi string format tanggal YYYY-MM-DD dengan regex
     cursor.execute("""
         SELECT AVG(tanggal_izin::date - tanggal_permohonan::date)
         FROM perizinan 
@@ -439,7 +467,6 @@ def get_analytics_metrics(period=None):
     avg_sla = cursor.fetchone()[0]
     metrics['avg_sla'] = round(float(avg_sla), 1) if avg_sla is not None else 0.0
 
-    # 4. Risk Distribution
     cursor.execute("""
         SELECT resiko, COUNT(*) 
         FROM perizinan 
@@ -449,7 +476,6 @@ def get_analytics_metrics(period=None):
     """)
     metrics['risk_distribution'] = cursor.fetchall()
     
-    # 5. Kategori Distribution
     cursor.execute("""
         SELECT kategori_perizinan, COUNT(*) 
         FROM perizinan 
@@ -459,7 +485,6 @@ def get_analytics_metrics(period=None):
     """)
     metrics['kategori_distribution'] = cursor.fetchall()
     
-    # 6. Time Trend
     cursor.execute("""
         SELECT SUBSTRING(tanggal_permohonan, 1, 7) as month, COUNT(*) 
         FROM perizinan 
@@ -469,7 +494,6 @@ def get_analytics_metrics(period=None):
     """)
     metrics['time_trend'] = cursor.fetchall()
     
-    # 7. Jenis Permohonan Distribution
     cursor.execute("""
         SELECT jenis_permohonan, COUNT(*) 
         FROM perizinan 
@@ -479,7 +503,6 @@ def get_analytics_metrics(period=None):
     """)
     metrics['jenis_permohonan_dist'] = cursor.fetchall()
     
-    # 8. Geo Distribution
     cursor.execute("""
         SELECT lokasi_usaha, COUNT(*) 
         FROM perizinan 
@@ -490,7 +513,6 @@ def get_analytics_metrics(period=None):
     """)
     metrics['geo_distribution'] = cursor.fetchall()
     
-    # 9. Jenis Dokumen Distribution
     cursor.execute("""
         SELECT jenis_dokumen, COUNT(*) 
         FROM perizinan 

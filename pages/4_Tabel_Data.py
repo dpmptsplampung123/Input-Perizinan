@@ -18,6 +18,7 @@ BULAN_INDONESIA = {
 
 import os
 
+@st.cache_data
 def load_sektor():
     # Get standard path relative to this file (pages/...) -> root is parent
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -154,7 +155,7 @@ if data:
         'Resiko', 'Kapasitas', 'Rencana Investasi', 'Jenis Permohonan', 'No. Permohonan', 'Tgl Permohonan',
         'No. & Tgl Perm. Rekom', 'No. & Tgl Rekomendasi',
         'No. Izin', 'Tgl Izin', 'Masa Berlaku', 'NPWP',
-        'Telepon', 'Email', 'Keterangan', 'Jenis Dokumen', 'Created At', 'Updated At'
+        'Telepon', 'Email', 'Keterangan', 'Jenis Dokumen', 'Dibuat Oleh', 'Diubah Oleh', 'Created At', 'Updated At'
     ]
     
     # Database field names (for update)
@@ -164,7 +165,7 @@ if data:
         'resiko', 'kapasitas', 'rencana_investasi', 'jenis_permohonan', 'nomor_permohonan', 'tanggal_permohonan',
         'nomor_tanggal_permohonan_rekomendasi', 'nomor_tanggal_rekomendasi',
         'nomor_izin', 'tanggal_izin', 'masa_berlaku', 'npwp',
-        'telepon', 'email', 'keterangan', 'jenis_dokumen', 'created_at', 'updated_at'
+        'telepon', 'email', 'keterangan', 'jenis_dokumen', 'created_by', 'updated_by', 'created_at', 'updated_at'
     ]
     
     # Create DataFrame
@@ -222,7 +223,7 @@ if data:
     df_with_select.insert(0, 'Pilih', False)
     
     # Columns that should not be editable
-    disabled_cols = ['ID', 'Created At', 'Updated At']
+    disabled_cols = ['ID', 'Dibuat Oleh', 'Diubah Oleh', 'Created At', 'Updated At']
     
     # Use data_editor for editable table
     # Note: Jenis Dokumen options depend on Kategori Perizinan
@@ -246,6 +247,8 @@ if data:
             "Resiko": st.column_config.SelectboxColumn("Resiko", options=['', 'RENDAH', 'MENENGAH RENDAH', 'MENENGAH TINGGI', 'TINGGI', 'UMKU']),
             "Jenis Permohonan": st.column_config.SelectboxColumn("Jenis Permohonan", options=['', 'Baru', 'Perpanjangan', 'Perubahan']),
             "Jenis Dokumen": st.column_config.SelectboxColumn("Jenis Dokumen", options=all_jenis_dokumen),
+            "Dibuat Oleh": st.column_config.TextColumn("Dibuat Oleh", disabled=True),
+            "Diubah Oleh": st.column_config.TextColumn("Diubah Oleh", disabled=True),
             "Created At": st.column_config.TextColumn("Created At", disabled=True),
             "Updated At": st.column_config.TextColumn("Updated At", disabled=True),
         },
@@ -281,7 +284,7 @@ if data:
                         update_data = {}
                         
                         for col_name, db_name in zip(columns, db_columns):
-                            if db_name in ['id', 'created_at', 'updated_at']:
+                            if db_name in ['id', 'created_at', 'updated_at', 'created_by', 'updated_by']:
                                 continue
                             value = edited_row[col_name]
                             # Convert to string, handle NaN
@@ -290,7 +293,9 @@ if data:
                             else:
                                 update_data[db_name] = str(value)
                         
-                        update_perizinan(row_id, update_data)
+                        curr_user = st.session_state.get("user", {})
+                        operator_user = curr_user.get("username", "petugas")
+                        update_perizinan(row_id, update_data, username=operator_user)
                         changes_made += 1
                     except Exception as e:
                         errors.append(f"ID {row_id}: {str(e)}")

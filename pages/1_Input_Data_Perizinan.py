@@ -9,9 +9,11 @@ st.set_page_config(
     layout="wide"
 )
 
+import re
 import os
 
-# Load daftar sektor dari file
+# Load daftar sektor dari file (dengan caching)
+@st.cache_data
 def load_sektor():
     # Get standard path relative to this file (pages/...) -> root is parent
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +112,11 @@ else:
     # Input fields dengan autocomplete
     nama_pengguna = text_input_with_autocomplete("Nama Pengguna Layanan", "nama_pengguna_layanan", "nama_pengguna")
     nib = text_input_with_autocomplete("NIB", "nib", "nib")
+    if nib:
+        clean_nib = re.sub(r'\D', '', str(nib))
+        if len(clean_nib) != 13:
+            st.caption(f"⚠️ *Perhatian:* Format NIB OSS standar adalah 13 digit angka (saat ini terdeteksi: **{len(clean_nib)}** digit).")
+
     alamat = text_input_with_autocomplete("Alamat", "alamat", "alamat", is_textarea=True, height=100)
     pemilik_pengurus = text_input_with_autocomplete("Pemilik/Pengurus", "pemilik_pengurus", "pemilik")
     lokasi_usaha = text_input_with_autocomplete("Lokasi Usaha", "lokasi_usaha", "lokasi")
@@ -120,7 +127,14 @@ else:
     resiko = st.selectbox("Resiko", ["", "RENDAH", "MENENGAH RENDAH", "MENENGAH TINGGI", "TINGGI", "UMKU"], key="resiko")
     
     kapasitas = text_input_with_autocomplete("Kapasitas", "kapasitas", "kapasitas")
-    rencana_investasi = text_input_with_autocomplete("Rencana Nilai Investasi", "rencana_investasi", "rencana_investasi")
+    rencana_investasi = text_input_with_autocomplete("Rencana Nilai Investasi (Rupiah)", "rencana_investasi", "rencana_investasi")
+    clean_inv_digits = re.sub(r'\D', '', str(rencana_investasi)) if rencana_investasi else ''
+    if clean_inv_digits:
+        try:
+            formatted_rp = f"Rp {int(clean_inv_digits):,}".replace(",", ".")
+            st.info(f"💰 **Format Tampilan:** `{formatted_rp}` *(akan tersimpan di database sebagai angka: `{clean_inv_digits}`)*")
+        except Exception:
+            pass
     jenis_permohonan = st.selectbox("Jenis Permohonan", ["", "Baru", "Perpanjangan", "Perubahan"], key="jenis_perm")
     nomor_permohonan = text_input_with_autocomplete("Nomor Permohonan", "nomor_permohonan", "nomor_perm")
     tanggal_permohonan = st.date_input("Tanggal Permohonan", value=None, key="tgl_perm")
@@ -216,11 +230,13 @@ else:
                 'email': email,
                 'keterangan': keterangan,
                 'jenis_dokumen': jenis_dokumen,
-                'rencana_investasi': rencana_investasi
+                'rencana_investasi': clean_inv_digits
             }
             
             try:
-                insert_perizinan(data)
+                curr_user = st.session_state.get("user", {})
+                petugas_username = curr_user.get("username", "petugas")
+                insert_perizinan(data, username=petugas_username)
                 st.success("Data perizinan berhasil disimpan.")
                 
                 # Clear all fields
