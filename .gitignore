@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# SQLite database
+*.db
+
+# Excel files
+*.xlsx
+
+# CSV files
+*.csv
+
+
+
+# Environment
+.env
+.streamlit/secrets.toml
+
+# VS Code settings
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
+
+security.text
+
